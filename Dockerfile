@@ -36,18 +36,42 @@ RUN mkdir -p storage/framework/{sessions,views,cache} \
     && mkdir -p bootstrap/cache \
     && chmod -R 777 storage bootstrap/cache
 
-# Copy .env.example to .env if .env doesn't exist
-RUN if [ ! -f .env ]; then cp .env.example .env; fi
+# DON'T copy .env - Render uses environment variables
+# DON'T generate key during build - use APP_KEY env variable instead
 
-# Generate application key
-RUN php artisan key:generate --force || echo "Key generation skipped"
+# Expose port dynamically (Render uses $PORT variable, usually 10000)
+EXPOSE ${PORT:-10000}
 
-# Expose port
-EXPOSE 8000
+# Create startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🚀 Starting Laravel application..."\n\
+\n\
+# Start server IMMEDIATELY in background (Render needs open port within 60s)\n\
+php artisan serve --host=0.0.0.0 --port=${PORT:-10000} &\n\
+SERVER_PID=$!\n\
+\n\
+# Wait for server to start\n\
+sleep 3\n\
+\n\
+# Run optimizations in background while server is running\n\
+echo "📦 Running optimizations..."\n\
+(php artisan config:cache || true) &\n\
+(php artisan route:cache || true) &\n\
+(php artisan view:cache || true) &\n\
+\n\
+# Wait a bit for cache commands\n\
+sleep 2\n\
+\n\
+# Run migrations (non-blocking)\n\
+echo "🗄️  Running migrations..."\n\
+php artisan migrate --force || echo "⚠️  Migrations failed"\n\
+\n\
+echo "✅ Application ready on port ${PORT:-10000}"\n\
+\n\
+# Keep server running in foreground\n\
+wait $SERVER_PID\n\
+' > /start.sh && chmod +x /start.sh
 
-# Start application (optimizations at runtime)
-CMD php artisan config:cache && \
-    php artisan route:cache && \
-    php artisan view:cache && \
-    php artisan migrate --force && \
-    php artisan serve --host=0.0.0.0 --port=8000
+# Start application with the script
+CMD ["/start.sh"]
